@@ -1,0 +1,5 @@
+{
+  "name": "Event Tech Bingo",
+  "description": "An interactive 5x5 Bingo game for tech events with real-time leaderboard and customizable squares.",
+  "requestFramePermissions": []
+}
