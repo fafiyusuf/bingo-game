@@ -1,13 +1,6 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+
 
 # Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/52e11641-ce04-4535-8704-4e835e5b87b2
-
 ## Run Locally
 
 **Prerequisites:**  Node.js
@@ -48,7 +41,9 @@ npm run start
 - WebSockets work by default on Render; no extra config needed.
 
 **Frontend:**
-- The same server serves the built Vite assets in production. The `start` script runs `NODE_ENV=production node --loader tsx server.ts`, which serves `dist/` after `npm run build`.
+- The same server serves the built Vite assets in production. The `start` script runs `NODE_ENV=production node --import tsx server.ts`, which serves `dist/` after `npm run build`.
+
+**Common local issue:** If you see `EADDRINUSE 0.0.0.0:3000`, set a free port when starting, e.g. `PORT=3001 npm run start`.
 
 ## SEO additions
 - Added descriptive meta tags (title, description, keywords, Open Graph, Twitter card) in `index.html`.
