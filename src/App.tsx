@@ -2,19 +2,16 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-
-import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, RotateCcw, User, CheckCircle2, PartyPopper, Info, Settings, Plus, Trash2, X, LayoutGrid, Copy } from 'lucide-react';
+import { CheckCircle2, Copy, Info, LayoutGrid, PartyPopper, Plus, RotateCcw, Settings, Trash2, Trophy, User } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 const FREE_SPACE = "FREE SPACE 💜";
-
 interface Question {
   id: number;
   text: string;
 }
-
 interface Cell {
   id: number;
   text: string;
@@ -46,11 +43,33 @@ export default function App() {
 
   const [roomCode, setRoomCode] = useState('');
   const [roomId, setRoomId] = useState<number | null>(null);
+  const [creatorName, setCreatorName] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [lobbyMode, setLobbyMode] = useState<'initial' | 'create' | 'join' | 'success'>('initial');
   const [stats, setStats] = useState<{ totalPlayers: number; bingoRate: string }>({ totalPlayers: 0, bingoRate: '0%' });
+  const [players, setPlayers] = useState<string[]>([]);
+
+  const STORAGE_KEY = 'tech-bingo-state';
+// Rehydrate session (creator/admin & player)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.playerName) setPlayerName(parsed.playerName);
+        if (parsed.roomCode) setRoomCode(parsed.roomCode);
+        if (parsed.roomId) setRoomId(parsed.roomId);
+        if (parsed.creatorName) setCreatorName(parsed.creatorName);
+        if (parsed.isAdmin) setIsAdmin(parsed.isAdmin);
+        if (parsed.isRegistered) setIsRegistered(parsed.isRegistered);
+        if (parsed.roomId) setLobbyMode('success');
+      }
+    } catch (e) {
+      console.warn('Failed to load saved session');
+    }
+  }, []);
 
   // Auto-fill room from URL
   useEffect(() => {
@@ -85,6 +104,17 @@ export default function App() {
     }
   }, [roomId]);
 
+  const fetchPlayers = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/players`);
+      const data = await res.json();
+      setPlayers(data);
+    } catch (err) {
+      console.error("Failed to fetch players:", err);
+    }
+  }, [roomId]);
+
   // Initialize Socket
   useEffect(() => {
     if (!roomId) return;
@@ -108,6 +138,11 @@ export default function App() {
       fetchStats();
     });
 
+    newSocket.on('player_joined', () => {
+      fetchPlayers();
+      fetchStats();
+    });
+
     // Fetch initial data
     fetch(`/api/winners/${roomId}`)
       .then(res => res.json())
@@ -116,11 +151,12 @@ export default function App() {
     
     fetchQuestions();
     fetchStats();
+    fetchPlayers();
 
     return () => {
       newSocket.close();
     };
-  }, [roomId, fetchQuestions]);
+  }, [roomId, fetchQuestions, fetchPlayers, fetchStats]);
 
   // Initialize Grid
   const initializeGrid = useCallback(() => {
@@ -268,14 +304,33 @@ export default function App() {
       const data = await res.json();
       setRoomCode(data.code);
       setRoomId(data.roomId);
+  setCreatorName(playerName);
       setIsAdmin(true);
       
       // Register player
-      await fetch(`/api/rooms/${data.roomId}/join`, {
+      const joinRes = await fetch(`/api/rooms/${data.roomId}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: playerName }),
       });
+      if (!joinRes.ok) {
+        const err = await joinRes.json();
+        alert(err.error || 'Failed to join room');
+        return;
+      }
+
+      setIsRegistered(true);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        playerName,
+        roomCode: data.code,
+        roomId: data.roomId,
+        creatorName: playerName,
+        isAdmin: true,
+        isRegistered: true,
+      }));
+
+      fetchPlayers();
+      fetchStats();
 
       setLobbyMode('success');
     } catch (err) {
@@ -299,16 +354,34 @@ export default function App() {
       const data = await res.json();
       setRoomId(data.id);
       setRoomCode(data.code); // Ensure correct casing
-      setIsAdmin(false);
+  setCreatorName(data.creator_name || '');
+  setIsAdmin(data.creator_name?.toLowerCase() === playerName.toLowerCase());
 
       // Register player
-      await fetch(`/api/rooms/${data.id}/join`, {
+      const joinRes = await fetch(`/api/rooms/${data.id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: playerName }),
       });
+      if (!joinRes.ok) {
+        const err = await joinRes.json();
+        alert(err.error || 'Failed to join room');
+        return;
+      }
 
       setIsRegistered(true);
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        playerName,
+        roomCode: data.code,
+        roomId: data.id,
+        creatorName: data.creator_name || '',
+        isAdmin: data.creator_name?.toLowerCase() === playerName.toLowerCase(),
+        isRegistered: true,
+      }));
+
+      fetchPlayers();
+      fetchStats();
     } catch (err) {
       console.error("Failed to join room:", err);
       alert("Network error: Could not connect to the server.");
@@ -330,13 +403,37 @@ export default function App() {
     navigator.clipboard.writeText(roomCode);
     alert("Room code copied to clipboard!");
   };
-
   const copyShareLink = () => {
     const link = `${window.location.origin}?room=${roomCode}`;
     navigator.clipboard.writeText(link);
     alert("Share link copied to clipboard!");
   };
-
+  // Verify admin status if roomId/playerName changes (after refresh)
+  useEffect(() => {
+    const verifyAdmin = async () => {
+      if (!roomId || !playerName) return;
+      try {
+        const res = await fetch(`/api/rooms/${roomCode || ''}`);
+        if (res.ok) {
+          const data = await res.json();
+          const adminMatch = data.creator_name?.toLowerCase() === playerName.toLowerCase();
+          setCreatorName(data.creator_name || '');
+          setIsAdmin(adminMatch);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            playerName,
+            roomCode: data.code,
+            roomId: data.id,
+            creatorName: data.creator_name || '',
+            isAdmin: adminMatch,
+            isRegistered,
+          }));
+        }
+      } catch (e) {
+        console.warn('Could not verify admin status');
+      }
+    };
+    verifyAdmin();
+  }, [roomId, playerName, roomCode, isRegistered]);
   if (!isRegistered) {
     return (
       <div className="min-h-screen bg-[#fafafa] flex items-center justify-center p-4 font-sans selection:bg-pink-100">
@@ -365,7 +462,6 @@ export default function App() {
                 className="w-full px-6 py-4 border-2 border-black font-black focus:outline-none focus:border-pink-500 transition-colors bg-white"
               />
             </div>
-
             <AnimatePresence mode="wait">
               {!playerName.trim() ? (
                 <motion.div 
@@ -494,7 +590,6 @@ export default function App() {
       </div>
     );
   }
-
   if (isRegistered && grid.length === 0) {
     return (
       <div className="min-h-screen bg-[#fafafa] flex items-center justify-center p-4 font-sans">
@@ -513,14 +608,13 @@ export default function App() {
       </div>
     );
   }
-
   return (
     <div className="min-h-screen bg-[#fafafa] text-[#1a1a1a] font-sans pb-12 selection:bg-pink-100 selection:text-pink-900">
       {/* Header - Brutalist/Clean Pairings */}
       <header className="bg-white border-b-2 border-black sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="bg-black text-white p-2.5 rotate-[-3deg] shadow-[4px_4px_0px_0px_rgba(236,72,153,1)]">
+            <div className="bg-black text-white p-2.5 -rotate-3 shadow-[4px_4px_0px_0px_rgba(236,72,153,1)]">
               <PartyPopper className="w-6 h-6" />
             </div>
             <div>
@@ -560,7 +654,6 @@ export default function App() {
           </div>
         </div>
       </header>
-
       <main className="max-w-6xl mx-auto px-6 py-10">
         <AnimatePresence mode="wait">
           {activeTab === 'play' ? (
@@ -596,11 +689,10 @@ export default function App() {
                     onClick={initializeGrid}
                     className="group flex items-center gap-2 bg-white border-2 border-black px-5 py-2.5 font-bold text-sm shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-1 hover:translate-y-1 transition-all"
                   >
-                    <RotateCcw className="w-4 h-4 group-hover:rotate-[-45deg] transition-transform" />
+                    <RotateCcw className="w-4 h-4 group-hover:-rotate-45 transition-transform" />
                     New Board
                   </button>
                 </div>
-
                 <div className="bg-white border-2 border-black p-4 sm:p-8 shadow-[12px_12px_0px_0px_rgba(0,0,0,0.05)]">
                   <div className="grid grid-cols-5 gap-3 sm:gap-4 aspect-square">
                     {grid.map((cell) => (
@@ -635,7 +727,6 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-
                 <div className="bg-black text-white p-6 flex items-start gap-4 border-l-8 border-pink-500">
                   <Info className="w-6 h-6 text-pink-500 shrink-0" />
                   <div>
@@ -724,6 +815,32 @@ export default function App() {
                       <p className="text-xl font-black">{stats.bingoRate}</p>
                     </div>
                   </div>
+                  <div className="mt-6 bg-white border border-pink-100 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h5 className="text-xs font-black uppercase tracking-widest text-gray-600">Players</h5>
+                      <span className="text-[10px] font-bold text-gray-400">{players.length} joined</span>
+                    </div>
+                    {players.length === 0 ? (
+                      <p className="text-xs text-gray-400 font-semibold">No players yet.</p>
+                    ) : (
+                      <ul className="space-y-2 max-h-48 overflow-auto pr-1">
+                        {players.map((p, idx) => (
+                          <li
+                            key={`${p}-${idx}`}
+                            className="flex items-center gap-3 text-sm font-semibold text-gray-800"
+                          >
+                            <span className="w-6 h-6 flex items-center justify-center border border-gray-200 text-[10px] font-black bg-gray-50">
+                              {idx + 1}
+                            </span>
+                            <span className="uppercase tracking-tight">{p}</span>
+                            {creatorName && p.toLowerCase() === creatorName.toLowerCase() && (
+                              <span className="text-[10px] font-black text-pink-600 uppercase">Creator</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -791,6 +908,23 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      <footer className="mt-12 border-t-4 border-black bg-white">
+        <div className="max-w-6xl mx-auto px-6 py-6 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="bg-black text-white px-3 py-2 shadow-[4px_4px_0px_0px_rgba(236,72,153,1)]">
+              <PartyPopper className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-black uppercase tracking-widest text-gray-500">Crafted for events</p>
+              <p className="text-sm md:text-base font-black uppercase tracking-tight">Built with 💜 by Fetiya</p>
+            </div>
+          </div>
+          <div className="text-[11px] text-gray-500 font-semibold uppercase tracking-widest">
+            React • Vite • Express • Socket.IO • SQLite
+          </div>
+        </div>
+      </footer>
 
       {/* Bingo Modal */}
       <AnimatePresence>

@@ -118,13 +118,22 @@ async function startServer() {
     res.json(room);
   });
 
+  app.get("/api/rooms/:roomId/players", (req, res) => {
+    const players = db.prepare("SELECT name FROM players WHERE room_id = ? ORDER BY joined_at ASC, id ASC").all(req.params.roomId);
+    res.json(players.map((p: any) => p.name));
+  });
+
   app.post("/api/rooms/:roomId/join", (req, res) => {
     const { roomId } = req.params;
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: "Name is required" });
     
     try {
-      db.prepare("INSERT OR IGNORE INTO players (room_id, name) VALUES (?, ?)").run(roomId, name);
+      const result = db.prepare("INSERT OR IGNORE INTO players (room_id, name) VALUES (?, ?)").run(roomId, name);
+      if (result.changes === 0) {
+        return res.status(409).json({ error: "That name is already taken in this room." });
+      }
+      io.to(`room_${roomId}`).emit("player_joined", { name });
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: "Failed to join room" });
